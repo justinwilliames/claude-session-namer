@@ -7,16 +7,29 @@ A session is a candidate when:
   - it has an index file (so it can actually be renamed), and
   - it is NOT the currently-active session ($CLAUDE_CODE_SESSION_ID), since the app
     clobbers external edits to the active session, and
-  - its current title does not already match `YYYY-MM-DD - … - …`, and
-  - its transcript has >= 2 substantive user messages.
+  - it is a HUMAN session — its first substantive user message does NOT open with
+    `<scheduled-task` (that prefix marks an automated cron/scheduled-task or self-
+    resuming loop run, which we never rename — dated machine fires only clutter the
+    sidebar), and
+  - its transcript has >= 1 substantive user message (one-shot human sessions count).
 
-Outputs a JSON array to stdout: {uuid, proj, date, n, title, first, last}.
+Sessions whose title ALREADY matches `YYYY-MM-DD - Topic - Status` are NOT dropped —
+they're emitted with `convention: true` and the parsed `cur_status` so the sweep can
+re-derive the Status from the current outcome and rewrite ONLY if it has drifted
+(Topic + date stay fixed). Un-named / mis-named sessions come through with
+`convention: false`.
+
+Outputs a JSON array to stdout: {uuid, proj, date, n, title, convention, cur_status,
+first, last}.
 Optionally pass --since-days N to limit to recently-active sessions.
 """
 import json, glob, os, re, sys
 
 ACTIVE = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
 CONVENTION = re.compile(r'^\d{4}-\d{2}-\d{2} - .+ - .+')
+# An automated (non-human) session: cron/scheduled-task and self-resuming-loop runs
+# all open their first user turn with this harness wrapper. Human sessions never do.
+SCHEDULED = re.compile(r'^\s*<scheduled-task\b')
 since_days = None
 if "--since-days" in sys.argv:
     since_days = int(sys.argv[sys.argv.index("--since-days") + 1])
@@ -68,12 +81,15 @@ for f in glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')):
     if uuid == ACTIVE or uuid not in index:
         continue
     title, last = index[uuid]
-    if title and CONVENTION.match(title):
-        continue
+    in_convention = bool(title and CONVENTION.match(title))
+    # Status = the segment after the LAST " - " (Topic itself may contain " - ").
+    cur_status = title.rsplit(" - ", 1)[1].strip() if in_convention else ""
     if since_days is not None and last and (now_ms - last) > since_days * 86400_000:
         continue
     msgs, date = digest(f)
-    if len(msgs) < 2:
+    if len(msgs) < 1:
+        continue
+    if SCHEDULED.match(msgs[0]):   # automated scheduled-task / resumer-loop run — never rename
         continue
     out.append({
         "uuid": uuid,
@@ -81,6 +97,8 @@ for f in glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')):
         "date": date or "",
         "n": len(msgs),
         "title": title,
+        "convention": in_convention,   # already named to convention → only re-check Status
+        "cur_status": cur_status,      # parsed current Status, for drift comparison
         "first": msgs[0][:240],
         "last": msgs[-1][:140],
     })
