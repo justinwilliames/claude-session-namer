@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
-# rename-session.sh — Rename a Claude Code session by appending a custom-title
-# event to the session's transcript JSONL. This is exactly what the sidebar
-# rename UI does internally — the Electron app watches the JSONL for changes
-# and updates the sidebar immediately.
+# rename-session.sh — Rename a Claude Desktop session by writing the title into
+# the app's session index (the store the sidebar actually reads), keyed by the
+# transcript UUID (cliSessionId).
 #
-# Usage: rename-session.sh "New Title" <session-uuid>
+# Usage: rename-session.sh "New Title" <cli-session-uuid>
+#
+# Replaces the previous approach of appending a `custom-title` event to the JSONL
+# transcript — the app never read that, so it never worked. See set-index-title.py.
+# Reliable for CLOSED sessions; the active session's title is owned by the app.
 
 set -e
 
 NEW_TITLE="$1"
-SESSION_UUID="$2"
+CLI_SESSION_ID="$2"
 
-if [ -z "$NEW_TITLE" ] || [ -z "$SESSION_UUID" ]; then
-  echo "Usage: rename-session.sh 'New Title' <session-uuid>" >&2
+if [ -z "$NEW_TITLE" ] || [ -z "$CLI_SESSION_ID" ]; then
+  echo "Usage: rename-session.sh 'New Title' <cli-session-uuid>" >&2
   exit 1
 fi
 
-# Find the transcript JSONL (the file the Electron app actually watches)
-TRANSCRIPT=$(find "$HOME/.claude/projects" -maxdepth 2 -name "${SESSION_UUID}.jsonl" 2>/dev/null | head -1)
-
-if [ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ]; then
-  exit 0
-fi
-
-# Append a custom-title event — same format as the sidebar rename
-python3 "$( dirname "$0" )/append-custom-title.py" "$TRANSCRIPT" "$NEW_TITLE" "$SESSION_UUID"
+python3 "$(dirname "$0")/set-index-title.py" "$CLI_SESSION_ID" "$NEW_TITLE"

@@ -1,70 +1,65 @@
 ---
 name: session-namer
 description: >
-  Generate or refresh a session name in the format YYYY-MM-DD - Topic - Status.
-  Invoke when the user wants to name or rename the current Claude Code session,
-  update the session name as work progresses, or needs a name to paste into the
-  session title field. Triggers on: "name this session", "update the session name",
-  "what should I call this chat", "session name", "/session-namer".
-  Fires automatically via Stop hook (every response) and SessionStart hook (on session load).
+  Generate or refresh Claude Desktop session names in the format
+  YYYY-MM-DD - Topic - Status, and apply them to the sidebar by writing the app's
+  session index. Invoke when the user wants to name/rename a session or "tidy my
+  sessions" — sweep the backlog of un-named sessions into the convention. Triggers on:
+  "name this session", "rename my sessions", "tidy my sessions", "what should I call
+  this chat", "session name", "/session-namer".
 ---
 
 # Session Namer
 
-## System requirements
+## How Claude Desktop stores session titles (load-bearing)
 
-- **Python 3** (standard library only — no Pillow, no network) for the default heuristic
-- Both hooks registered in `~/.claude/settings.json` (stop timeout 30s, start timeout 15s)
-- *Optional:* a logged-in `claude` CLI for opt-in LLM-grade naming (see *Naming engine*)
+Session titles live in the **app's own session index**, NOT in the transcript:
 
-The hooks work fully automatically and, by default, have **no external dependencies**. Naming
-is applied purely by writing a `custom-title` event into the session's own JSONL, keyed by the
-exact session UUID. The Electron app reads that title when the session next loads.
+```
+~/Library/Application Support/Claude/claude-code-sessions/<workspace>/<…>/local_*.json
+```
 
-## How the automatic naming works
+Each index file has a `title` and `titleSource` field and a `cliSessionId` that equals
+the transcript UUID. `titleSource: "user"` tells the app's built-in auto-namer to leave
+the title alone. **Appending a `custom-title` event to the JSONL transcript does nothing**
+— the sidebar never reads it (a long-standing misconception now corrected).
 
-Both hooks identify the session by `CLAUDE_CODE_SESSION_ID` — the exact UUID the hook is
-handed — and only ever touch *that* session's JSONL. They never click the sidebar, so they
-can never rename a different session than the one that fired. (Earlier versions drove the
-sidebar via a screenshot + cliclick, which renamed whichever row happened to be highlighted
-on screen — frequently the wrong session. That path was removed.)
+Two hard constraints discovered the hard way:
 
-**Stop hook** (`session-namer-stop.sh`) fires after every assistant response:
-1. Reads the user messages from the session JSONL
-2. Generates a name (see *Naming engine* below)
-3. Debounces: skips if the name hasn't changed since the last `custom-title`
-4. Appends a `custom-title` event to the JSONL, keyed by the session UUID (`rename-session.sh`)
+1. **The app owns the *active/loaded* session's title in memory and flushes it to disk on
+   quit**, clobbering any external edit. So writing the index file reliably renames **closed**
+   sessions; it will NOT stick for the session you are currently in, or for pinned/loaded ones.
+   The active session is named by the app's own auto-namer (which is decent) or a manual UI
+   rename.
+2. **The running app only reads the index on launch.** New titles appear after a relaunch /
+   reopen, not live.
 
-**Start hook** (`session-namer-start.sh`) fires when a session loads:
-- Same generation + JSONL write, keyed by the session UUID
-- Only runs if the session has ≥ 2 user messages (skips brand-new sessions)
+## How naming works now (on-demand, live-LLM)
 
-## Naming engine
+There are **no hooks**. Per-turn hook naming was retired because (a) it can't beat the app for
+the active session, and (b) a heuristic running in a logged-out subprocess would *downgrade*
+the app's own auto-names. Instead:
 
-Two engines, in priority order:
+- **The live, already-authenticated assistant does the naming.** When the user asks to name or
+  "tidy" sessions, the assistant generates proper `YYYY-MM-DD - Topic - Status` names (full
+  conversation context, no CLI login, no extra cost) and writes them to the index store via
+  `rename-session.sh "<title>" <cliSessionId>` (→ `set-index-title.py`).
+- **Worklist:** `find-unnamed-sessions.py` lists substantive **closed** sessions whose index
+  title doesn't yet match the convention (excludes the active session and no-index sessions),
+  with a digest (opening ask + last message) for each. That's the sweep input.
+- **`generate-name.py`** is a deterministic heuristic fallback (first-message-anchored topic,
+  last-message status, session's own date) for unattended/scheduled sweeps where no live model
+  is in the loop.
 
-1. **Heuristic (default, `generate-name.py`)** — deterministic, zero dependency, no network.
-   Anchors the **Topic** on the *opening* user message (which states the task) rather than
-   counting word frequency, derives the **Status** from the *final* message (with explicit
-   handling for interrupts / handoffs / acknowledgements), and stamps the session's *own*
-   start date. Decent, but reads a little clumsy on complex sessions — it's the floor.
+After a sweep, the names appear on the next Claude Desktop relaunch.
 
-2. **LLM-grade (opt-in, `generate-name-llm.sh`)** — export `SESSION_NAMER_USE_LLM=1` to have
-   the hooks ask a fast model (`claude -p`, Haiku by default; override with
-   `SESSION_NAMER_LLM_MODEL`) to name the session from a digest of the opening ask + last
-   message. **Requires the `claude` CLI to be logged in** (`claude /login` once in a terminal —
-   the Desktop app's auth does not carry to the CLI). On any failure (not logged in, timeout,
-   malformed output) it falls back to the heuristic, so naming never stops.
+## Sweep recipe
 
-   The headless `claude` it spawns sets `SESSION_NAMER_INTERNAL=1`; both hooks short-circuit
-   when they see that variable, so the naming call can never recurse into itself.
-
-## Where the name shows up
-
-The sidebar reflects the new name when the session is **next loaded** (reopened, or after an
-app restart) — the running app does not pick up appended `custom-title` events live. This is
-the deliberate trade for correctness: deterministic UUID-keyed writes can never clobber a
-different session, whereas the old live-update path could and did.
+1. `find-unnamed-sessions.py > /tmp/unnamed.json` (optionally `--since-days N`).
+2. For each entry, generate a `YYYY-MM-DD - Topic - Status` name from its digest (live assistant
+   = best quality; or `generate-name.py <transcript>` for the heuristic floor).
+3. Apply: `rename-session.sh "<name>" <uuid>` per session.
+4. Tell the user to relaunch Desktop to see them.
 
 ---
 
@@ -74,11 +69,13 @@ Generate a session name in the standard format:
 
 ## On invocation
 
-1. Run `date +%Y-%m-%d` to get today's date
+1. Use the session's own date (`YYYY-MM-DD` from its first transcript event), not necessarily today
 2. Infer the **Topic** from the conversation (what work is being done, which system/project)
 3. Determine the **Status** from the table below based on current progress
-4. Output the suggested name prominently on its own line as inline code
-5. Remind the user to rename the session by clicking the title in the sidebar
+4. Output the suggested name on its own line as inline code
+5. **Apply it** via `rename-session.sh "<name>" <cliSessionId>` for closed sessions. For the
+   *current* session, the app owns the title — offer the name for a manual UI rename instead,
+   since a disk write won't stick while it's active.
 
 ## Topic naming — rules
 
@@ -123,7 +120,8 @@ Always output the name as a standalone line like this:
 
 **Suggested session name:** `2026-06-26 - Activation Canvas - Building`
 
-*Rename: click the session title in the sidebar → paste.*
+For closed sessions the skill applies it directly to the index store. For the active session,
+the user renames via the sidebar (right-click → Rename → paste) — the app owns the live title.
 
 ## On re-invocation mid-session
 
