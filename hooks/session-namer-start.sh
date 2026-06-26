@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # session-namer-start.sh — SessionStart hook.
-# Injects additionalContext telling Claude to output a contextual session name
-# at the END of every response in the format: YYYY-MM-DD - Topic - Status
+# For existing sessions that already have content, write a custom-title to their
+# JSONL (keyed by the exact session UUID) so the name is current for this and
+# future loads. New sessions (< 2 user messages) are left alone — the Stop hook
+# will name them after the first response. Like the Stop hook, this NEVER touches
+# the sidebar by clicking, so it can never rename a different session.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+GENERATE="$SCRIPT_DIR/../scripts/generate-name.py"
+RENAME="$SCRIPT_DIR/../scripts/rename-session.sh"
+LOG="/tmp/session-namer-debug.log"
+
+SESSION_UUID="$CLAUDE_CODE_SESSION_ID"
+[ -z "$SESSION_UUID" ] && exit 0
+
+TRANSCRIPT=$(find "$HOME/.claude/projects" -maxdepth 2 -name "${SESSION_UUID}.jsonl" 2>/dev/null | head -1)
+[ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ] && exit 0
+
+# Only name if there's enough conversation to generate a meaningful name
+MSG_COUNT=$(grep -c '"type":"user"' "$TRANSCRIPT" 2>/dev/null || echo 0)
+[ "$MSG_COUNT" -lt 2 ] && exit 0
 
 TODAY=$(date +%Y-%m-%d)
+SESSION_NAME=$(python3 "$GENERATE" "$TRANSCRIPT" "$TODAY" 2>/dev/null || echo "")
+[ -z "$SESSION_NAME" ] && exit 0
 
-DIRECTIVE="SESSION NAMING — At the END of every assistant response this session, output a single line with a suggested session name:
-
-**Session name:** \`${TODAY} - <Topic> - <Status>\`
-
-Rules:
-- Topic: 2–5 words, Title Case — name the thing being worked on (system, project, or task), not the action
-- Status: 2–6 words, Title Case, LLM-generated — describe precisely what is happening RIGHT NOW based on the work just done or discussed. This is freeform, not a fixed list. Examples: 'Wiring Stop Hook', 'Debugging JSON Output', 'Done - Skill Deployed', 'Planning Naming Convention', 'Investigating Customer Churn', 'Canvas QA Complete'
-- Output this as the very LAST line of your response, after all other content
-- Keep updating it every turn — the Status should reflect the current state of work, not where the session started
-- The user renames the session manually by clicking the title in the sidebar
-- If context is thin on the first turn, make the best inference — don't ask"
-
-printf '%s' "$DIRECTIVE" | python3 -c 'import json,sys
-ctx = sys.stdin.read()
-print(json.dumps({
-    "hookSpecificOutput": {
-        "hookEventName": "SessionStart",
-        "additionalContext": ctx
-    }
-}))'
+echo "$(date): start-hook name '$SESSION_NAME' uuid=$SESSION_UUID" >> "$LOG"
+"$RENAME" "$SESSION_NAME" "$SESSION_UUID" >> "$LOG" 2>&1 || true
 
 exit 0

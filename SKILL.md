@@ -6,10 +6,46 @@ description: >
   update the session name as work progresses, or needs a name to paste into the
   session title field. Triggers on: "name this session", "update the session name",
   "what should I call this chat", "session name", "/session-namer".
-  Also fires automatically at the start of every new session via the SessionStart hook.
+  Fires automatically via Stop hook (every response) and SessionStart hook (on session load).
 ---
 
 # Session Namer
+
+## System requirements
+
+- **Python 3** (standard library only — no Pillow, no network, no LLM call)
+- Both hooks registered in `~/.claude/settings.json` (stop timeout 30s, start timeout 15s)
+
+The hooks work fully automatically and have **no external dependencies**. Naming is applied
+purely by writing a `custom-title` event into the session's own JSONL, keyed by the exact
+session UUID. The Electron app reads that title when the session next loads.
+
+## How the automatic naming works
+
+Both hooks identify the session by `CLAUDE_CODE_SESSION_ID` — the exact UUID the hook is
+handed — and only ever touch *that* session's JSONL. They never click the sidebar, so they
+can never rename a different session than the one that fired. (Earlier versions drove the
+sidebar via a screenshot + cliclick, which renamed whichever row happened to be highlighted
+on screen — frequently the wrong session. That path was removed.)
+
+**Stop hook** (`session-namer-stop.sh`) fires after every assistant response:
+1. Reads all user messages from the session JSONL
+2. Generates a name via word-frequency heuristic (`generate-name.py`) — no LLM call, no network
+3. Debounces: skips if the name hasn't changed since the last `custom-title`
+4. Appends a `custom-title` event to the JSONL, keyed by the session UUID (`rename-session.sh`)
+
+**Start hook** (`session-namer-start.sh`) fires when a session loads:
+- Same generation + JSONL write, keyed by the session UUID
+- Only runs if the session has ≥ 2 user messages (skips brand-new sessions)
+
+## Where the name shows up
+
+The sidebar reflects the new name when the session is **next loaded** (reopened, or after an
+app restart) — the running app does not pick up appended `custom-title` events live. This is
+the deliberate trade for correctness: deterministic UUID-keyed writes can never clobber a
+different session, whereas the old live-update path could and did.
+
+---
 
 Generate a session name in the standard format:
 

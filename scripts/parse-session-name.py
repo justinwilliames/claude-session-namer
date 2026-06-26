@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read a Claude Code transcript JSONL from stdin and extract the last
-**Session name:** `...` line from the last assistant message."""
+<!-- session-name: ... --> marker from the last assistant message."""
 import sys, json, re
 
 last_text = ""
@@ -20,6 +20,6 @@ for raw in sys.stdin:
             if text:
                 last_text = text
 
-match = re.search(r"\*\*Session name:\*\*\s*`([^`]+)`", last_text)
+match = re.search(r"<!--\s*session-name:\s*(.+?)\s*-->", last_text)
 if match:
     print(match.group(1).strip())

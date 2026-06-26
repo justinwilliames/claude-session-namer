@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# rename-session.sh — Write a new title to a Claude Code session JSON file.
-# Usage: rename-session.sh "New Title" <session-uuid>
+# rename-session.sh — Rename a Claude Code session by appending a custom-title
+# event to the session's transcript JSONL. This is exactly what the sidebar
+# rename UI does internally — the Electron app watches the JSONL for changes
+# and updates the sidebar immediately.
 #
-# The session UUID is the cliSessionId field inside the local_*.json files at
-# ~/Library/Application Support/Claude/claude-code-sessions/**/*.json
-# Setting titleSource='user' mirrors what the sidebar rename does and locks
-# the title against auto-overwrite by Claude Code's AI naming.
+# Usage: rename-session.sh "New Title" <session-uuid>
 
 set -e
 
@@ -17,15 +16,12 @@ if [ -z "$NEW_TITLE" ] || [ -z "$SESSION_UUID" ]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SESSIONS_DIR="$HOME/Library/Application Support/Claude/claude-code-sessions"
+# Find the transcript JSONL (the file the Electron app actually watches)
+TRANSCRIPT=$(find "$HOME/.claude/projects" -maxdepth 2 -name "${SESSION_UUID}.jsonl" 2>/dev/null | head -1)
 
-# Find the session file matching this cliSessionId
-SESSION_FILE=$(grep -rl "\"cliSessionId\":\"$SESSION_UUID\"" "$SESSIONS_DIR" 2>/dev/null | head -1)
-
-if [ -z "$SESSION_FILE" ]; then
-  exit 0  # silent — session file not found (may be agent/subagent session)
+if [ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ]; then
+  exit 0
 fi
 
-# Atomically patch title + titleSource
-python3 "$SCRIPT_DIR/patch-session-json.py" "$SESSION_FILE" "$NEW_TITLE"
+# Append a custom-title event — same format as the sidebar rename
+python3 "$( dirname "$0" )/append-custom-title.py" "$TRANSCRIPT" "$NEW_TITLE" "$SESSION_UUID"

@@ -1,26 +1,58 @@
 #!/usr/bin/env bash
 # session-namer-stop.sh — Stop hook.
-# Uses CLAUDE_CODE_SESSION_ID env var (available in all Stop hooks) to locate
-# the transcript and write the LLM-generated session name directly to the
-# session JSON file — no UI, no stdin, no path encoding hacks.
+# Generates a session name from transcript content (word-frequency heuristic) and
+# appends a custom-title event to THIS session's JSONL, keyed by the exact session
+# UUID the hook was handed. The Electron app picks the name up on the next load of
+# this session. The name is NEVER applied by clicking the sidebar, so it can never
+# rename a different session than the one that fired this hook.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RENAME="$SCRIPT_DIR/../scripts/rename-session.sh"
-PARSE="$SCRIPT_DIR/../scripts/parse-session-name.py"
+GENERATE="$SCRIPT_DIR/../scripts/generate-name.py"
+LOG="/tmp/session-namer-debug.log"
+
+echo "$(date): fired uuid=$CLAUDE_CODE_SESSION_ID" >> "$LOG"
 
 SESSION_UUID="$CLAUDE_CODE_SESSION_ID"
-[ -z "$SESSION_UUID" ] && exit 0
+[ -z "$SESSION_UUID" ] && echo "$(date): EXIT no uuid" >> "$LOG" && exit 0
 
-# Find the transcript by UUID — avoids needing to know Claude Code's
-# exact project-key encoding (which handles spaces, tildes, etc.)
 TRANSCRIPT=$(find "$HOME/.claude/projects" -maxdepth 2 -name "${SESSION_UUID}.jsonl" 2>/dev/null | head -1)
-[ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ] && exit 0
+echo "$(date): transcript=$TRANSCRIPT" >> "$LOG"
+[ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ] && echo "$(date): EXIT no transcript" >> "$LOG" && exit 0
 
-# Parse "**Session name:** `...`" from the last assistant message
-SESSION_NAME=$(tail -c 100000 "$TRANSCRIPT" 2>/dev/null | python3 "$PARSE" 2>/dev/null || echo "")
-[ -z "$SESSION_NAME" ] && exit 0
+TODAY=$(date +%Y-%m-%d)
+SESSION_NAME=$(python3 "$GENERATE" "$TRANSCRIPT" "$TODAY" 2>/dev/null || echo "")
+echo "$(date): name='$SESSION_NAME'" >> "$LOG"
+[ -z "$SESSION_NAME" ] && echo "$(date): EXIT no name" >> "$LOG" && exit 0
 
-# Write it
-"$RENAME" "$SESSION_NAME" "$SESSION_UUID" 2>/dev/null || true
+# Debounce: skip if the generated name hasn't changed from last custom-title
+LAST_TITLE=$(python3 -c "
+import json
+last = ''
+for line in open('$TRANSCRIPT'):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        ev = json.loads(line)
+    except Exception:
+        continue
+    if ev.get('type') == 'custom-title':
+        last = ev.get('customTitle', '')
+print(last)
+" 2>/dev/null)
 
+SESSION_NAME_LC=$(echo "$SESSION_NAME" | tr '[:upper:]' '[:lower:]')
+LAST_TITLE_LC=$(echo "$LAST_TITLE" | tr '[:upper:]' '[:lower:]')
+
+if [ "$SESSION_NAME_LC" = "$LAST_TITLE_LC" ]; then
+    echo "$(date): name unchanged, skip" >> "$LOG"
+    exit 0
+fi
+
+# Append custom-title to this session's JSONL, keyed by its UUID (applied on next load).
+echo "$(date): appending to jsonl" >> "$LOG"
+"$RENAME" "$SESSION_NAME" "$SESSION_UUID" >> "$LOG" 2>&1 || true
+
+echo "$(date): done" >> "$LOG"
 exit 0
