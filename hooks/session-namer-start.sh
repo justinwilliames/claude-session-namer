@@ -6,8 +6,12 @@
 # will name them after the first response. Like the Stop hook, this NEVER touches
 # the sidebar by clicking, so it can never rename a different session.
 
+# Recursion guard (see session-namer-stop.sh): a headless naming claude sets this.
+[ -n "$SESSION_NAMER_INTERNAL" ] && exit 0
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GENERATE="$SCRIPT_DIR/../scripts/generate-name.py"
+GENERATE_LLM="$SCRIPT_DIR/../scripts/generate-name-llm.sh"
 RENAME="$SCRIPT_DIR/../scripts/rename-session.sh"
 LOG="/tmp/session-namer-debug.log"
 
@@ -22,7 +26,9 @@ MSG_COUNT=$(grep -c '"type":"user"' "$TRANSCRIPT" 2>/dev/null || echo 0)
 [ "$MSG_COUNT" -lt 2 ] && exit 0
 
 TODAY=$(date +%Y-%m-%d)
-SESSION_NAME=$(python3 "$GENERATE" "$TRANSCRIPT" "$TODAY" 2>/dev/null || echo "")
+SESSION_NAME=""
+[ "$SESSION_NAMER_USE_LLM" = "1" ] && SESSION_NAME=$(bash "$GENERATE_LLM" "$TRANSCRIPT" "$TODAY" 2>/dev/null || echo "")
+[ -z "$SESSION_NAME" ] && SESSION_NAME=$(python3 "$GENERATE" "$TRANSCRIPT" "$TODAY" 2>/dev/null || echo "")
 [ -z "$SESSION_NAME" ] && exit 0
 
 echo "$(date): start-hook name '$SESSION_NAME' uuid=$SESSION_UUID" >> "$LOG"

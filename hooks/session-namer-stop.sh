@@ -6,9 +6,15 @@
 # this session. The name is NEVER applied by clicking the sidebar, so it can never
 # rename a different session than the one that fired this hook.
 
+# Recursion guard: if SESSION_NAMER_USE_LLM is on, this hook shells out to a
+# headless `claude` that may fire its own Stop hook. That nested run sets
+# SESSION_NAMER_INTERNAL=1, so we short-circuit here instead of spawning again.
+[ -n "$SESSION_NAMER_INTERNAL" ] && exit 0
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RENAME="$SCRIPT_DIR/../scripts/rename-session.sh"
 GENERATE="$SCRIPT_DIR/../scripts/generate-name.py"
+GENERATE_LLM="$SCRIPT_DIR/../scripts/generate-name-llm.sh"
 LOG="/tmp/session-namer-debug.log"
 
 echo "$(date): fired uuid=$CLAUDE_CODE_SESSION_ID" >> "$LOG"
@@ -21,7 +27,11 @@ echo "$(date): transcript=$TRANSCRIPT" >> "$LOG"
 [ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ] && echo "$(date): EXIT no transcript" >> "$LOG" && exit 0
 
 TODAY=$(date +%Y-%m-%d)
-SESSION_NAME=$(python3 "$GENERATE" "$TRANSCRIPT" "$TODAY" 2>/dev/null || echo "")
+# Prefer LLM-grade naming when opted in (needs `claude /login`); fall back to the
+# deterministic heuristic on any failure so naming never silently stops.
+SESSION_NAME=""
+[ "$SESSION_NAMER_USE_LLM" = "1" ] && SESSION_NAME=$(bash "$GENERATE_LLM" "$TRANSCRIPT" "$TODAY" 2>/dev/null || echo "")
+[ -z "$SESSION_NAME" ] && SESSION_NAME=$(python3 "$GENERATE" "$TRANSCRIPT" "$TODAY" 2>/dev/null || echo "")
 echo "$(date): name='$SESSION_NAME'" >> "$LOG"
 [ -z "$SESSION_NAME" ] && echo "$(date): EXIT no name" >> "$LOG" && exit 0
 

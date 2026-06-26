@@ -13,12 +13,13 @@ description: >
 
 ## System requirements
 
-- **Python 3** (standard library only — no Pillow, no network, no LLM call)
+- **Python 3** (standard library only — no Pillow, no network) for the default heuristic
 - Both hooks registered in `~/.claude/settings.json` (stop timeout 30s, start timeout 15s)
+- *Optional:* a logged-in `claude` CLI for opt-in LLM-grade naming (see *Naming engine*)
 
-The hooks work fully automatically and have **no external dependencies**. Naming is applied
-purely by writing a `custom-title` event into the session's own JSONL, keyed by the exact
-session UUID. The Electron app reads that title when the session next loads.
+The hooks work fully automatically and, by default, have **no external dependencies**. Naming
+is applied purely by writing a `custom-title` event into the session's own JSONL, keyed by the
+exact session UUID. The Electron app reads that title when the session next loads.
 
 ## How the automatic naming works
 
@@ -29,14 +30,34 @@ sidebar via a screenshot + cliclick, which renamed whichever row happened to be 
 on screen — frequently the wrong session. That path was removed.)
 
 **Stop hook** (`session-namer-stop.sh`) fires after every assistant response:
-1. Reads all user messages from the session JSONL
-2. Generates a name via word-frequency heuristic (`generate-name.py`) — no LLM call, no network
+1. Reads the user messages from the session JSONL
+2. Generates a name (see *Naming engine* below)
 3. Debounces: skips if the name hasn't changed since the last `custom-title`
 4. Appends a `custom-title` event to the JSONL, keyed by the session UUID (`rename-session.sh`)
 
 **Start hook** (`session-namer-start.sh`) fires when a session loads:
 - Same generation + JSONL write, keyed by the session UUID
 - Only runs if the session has ≥ 2 user messages (skips brand-new sessions)
+
+## Naming engine
+
+Two engines, in priority order:
+
+1. **Heuristic (default, `generate-name.py`)** — deterministic, zero dependency, no network.
+   Anchors the **Topic** on the *opening* user message (which states the task) rather than
+   counting word frequency, derives the **Status** from the *final* message (with explicit
+   handling for interrupts / handoffs / acknowledgements), and stamps the session's *own*
+   start date. Decent, but reads a little clumsy on complex sessions — it's the floor.
+
+2. **LLM-grade (opt-in, `generate-name-llm.sh`)** — export `SESSION_NAMER_USE_LLM=1` to have
+   the hooks ask a fast model (`claude -p`, Haiku by default; override with
+   `SESSION_NAMER_LLM_MODEL`) to name the session from a digest of the opening ask + last
+   message. **Requires the `claude` CLI to be logged in** (`claude /login` once in a terminal —
+   the Desktop app's auth does not carry to the CLI). On any failure (not logged in, timeout,
+   malformed output) it falls back to the heuristic, so naming never stops.
+
+   The headless `claude` it spawns sets `SESSION_NAMER_INTERNAL=1`; both hooks short-circuit
+   when they see that variable, so the naming call can never recurse into itself.
 
 ## Where the name shows up
 
